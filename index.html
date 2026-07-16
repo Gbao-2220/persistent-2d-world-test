@@ -132,6 +132,7 @@
     const players = new Map();
     let socket;
     let self = { id: "", x: 0, y: 0, color: COLORS[0] };
+    let camera = { x: 0, y: 0, ready: false };
     let selectedColor = COLORS[0];
     let bounds = { min: -2048, max: 2047 };
     let reconnectTimer;
@@ -155,10 +156,10 @@
 
       const columns = Math.ceil(width / TILE_SIZE) + 2;
       const rows = Math.ceil(height / TILE_SIZE) + 2;
-      const startX = self.x - Math.floor(columns / 2);
-      const startY = self.y - Math.floor(rows / 2);
-      const originX = width / 2 - self.x * TILE_SIZE;
-      const originY = height / 2 - self.y * TILE_SIZE;
+      const startX = Math.floor(camera.x) - Math.floor(columns / 2);
+      const startY = Math.floor(camera.y) - Math.floor(rows / 2);
+      const originX = width / 2 - (camera.x + .5) * TILE_SIZE;
+      const originY = height / 2 - (camera.y + .5) * TILE_SIZE;
 
       for (let y = startY; y <= startY + rows; y++) {
         for (let x = startX; x <= startX + columns; x++) {
@@ -191,6 +192,17 @@
       }
     }
 
+    function animate() {
+      if (camera.ready) {
+        camera.x += (self.x - camera.x) * .16;
+        camera.y += (self.y - camera.y) * .16;
+        if (Math.abs(self.x - camera.x) < .001) camera.x = self.x;
+        if (Math.abs(self.y - camera.y) < .001) camera.y = self.y;
+      }
+      draw();
+      requestAnimationFrame(animate);
+    }
+
     function setOnline(isOnline, text) {
       dotEl.classList.toggle("online", isOnline);
       connectionEl.textContent = text;
@@ -213,6 +225,7 @@
 
         if (message.type === "init") {
           self = message.self;
+          camera = { x: self.x, y: self.y, ready: true };
           bounds = message.bounds;
           tiles.clear();
           players.clear();
@@ -242,14 +255,20 @@
     }
 
     function send(message) {
-      if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify(message));
+      if (socket?.readyState !== WebSocket.OPEN) return false;
+      socket.send(JSON.stringify(message));
+      return true;
     }
 
     function move(dx, dy) {
       const x = Math.max(bounds.min, Math.min(bounds.max, self.x + dx));
       const y = Math.max(bounds.min, Math.min(bounds.max, self.y + dy));
       if (x === self.x && y === self.y) return;
-      send({ type: "move", x, y });
+      if (send({ type: "move", x, y })) {
+        self = { ...self, x, y };
+        players.set(self.id, self);
+        refreshInfo();
+      }
     }
 
     function paint() {
@@ -283,8 +302,8 @@
 
     addEventListener("resize", resize);
     resize();
+    requestAnimationFrame(animate);
     connect();
   </script>
 </body>
 </html>
-
