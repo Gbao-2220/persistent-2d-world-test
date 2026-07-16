@@ -1,0 +1,290 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>지속 저장 2D 월드 테스트</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      font-family: Inter, Pretendard, system-ui, sans-serif;
+      background: #08111f;
+      color: #e5eefb;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; overflow: hidden; background: #08111f; }
+    canvas { display: block; width: 100vw; height: 100vh; touch-action: none; }
+    .panel {
+      position: fixed;
+      z-index: 2;
+      top: 14px;
+      left: 14px;
+      width: min(360px, calc(100vw - 28px));
+      padding: 14px;
+      border: 1px solid rgba(148, 163, 184, .22);
+      border-radius: 16px;
+      background: rgba(8, 17, 31, .86);
+      box-shadow: 0 16px 45px rgba(0, 0, 0, .32);
+      backdrop-filter: blur(14px);
+    }
+    h1 { margin: 0 0 8px; font-size: 17px; }
+    p { margin: 5px 0; color: #a9b8ce; font-size: 13px; line-height: 1.45; }
+    .row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+    .badge {
+      display: inline-flex;
+      gap: 6px;
+      align-items: center;
+      padding: 6px 9px;
+      border-radius: 999px;
+      background: #111f34;
+      color: #c8d6e9;
+      font-size: 12px;
+    }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: #ef4444; }
+    .dot.online { background: #22c55e; box-shadow: 0 0 10px #22c55e; }
+    .palette button, .paint, .move button {
+      border: 0;
+      cursor: pointer;
+      transition: transform .12s, outline-color .12s;
+    }
+    .palette button {
+      width: 27px;
+      height: 27px;
+      border-radius: 9px;
+      outline: 2px solid transparent;
+      outline-offset: 2px;
+    }
+    .palette button.selected { outline-color: white; transform: scale(1.08); }
+    .paint {
+      padding: 9px 12px;
+      border-radius: 10px;
+      background: #e8eef8;
+      color: #0b1422;
+      font-weight: 800;
+    }
+    .saved { color: #86efac; min-height: 18px; }
+    .move {
+      position: fixed;
+      z-index: 3;
+      right: 18px;
+      bottom: 18px;
+      display: grid;
+      grid-template-columns: repeat(3, 46px);
+      grid-template-rows: repeat(2, 46px);
+      gap: 6px;
+    }
+    .move button {
+      border-radius: 13px;
+      background: rgba(15, 29, 49, .9);
+      color: white;
+      font-size: 18px;
+      border: 1px solid rgba(148, 163, 184, .22);
+    }
+    .move button:active { transform: scale(.94); background: #263b5a; }
+    .up { grid-column: 2; }
+    .left { grid-column: 1; grid-row: 2; }
+    .down { grid-column: 2; grid-row: 2; }
+    .right { grid-column: 3; grid-row: 2; }
+    @media (max-height: 620px) {
+      .panel { padding: 10px 12px; }
+      .panel p.help { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <canvas id="world"></canvas>
+
+  <section class="panel">
+    <h1>지속 저장 2D 월드 테스트</h1>
+    <p class="help">방향키나 WASD로 이동하고 Space를 눌러 현재 칸을 칠해봐. 두 창을 열면 서로의 움직임이 실시간으로 보여.</p>
+    <div class="row">
+      <span class="badge"><span id="dot" class="dot"></span><span id="connection">연결 중</span></span>
+      <span id="online" class="badge">접속 0명</span>
+      <span id="position" class="badge">0, 0</span>
+    </div>
+    <div id="palette" class="row palette"></div>
+    <div class="row">
+      <button id="paint" class="paint">현재 칸 칠하기</button>
+      <span id="saved" class="saved"></span>
+    </div>
+  </section>
+
+  <nav class="move" aria-label="이동 버튼">
+    <button class="up" data-dx="0" data-dy="-1" aria-label="위">▲</button>
+    <button class="left" data-dx="-1" data-dy="0" aria-label="왼쪽">◀</button>
+    <button class="down" data-dx="0" data-dy="1" aria-label="아래">▼</button>
+    <button class="right" data-dx="1" data-dy="0" aria-label="오른쪽">▶</button>
+  </nav>
+
+  <script>
+    const COLORS = ["#5eead4", "#60a5fa", "#a78bfa", "#f472b6", "#f59e0b", "#84cc16"];
+    const TILE_SIZE = 34;
+    const canvas = document.querySelector("#world");
+    const ctx = canvas.getContext("2d");
+    const connectionEl = document.querySelector("#connection");
+    const dotEl = document.querySelector("#dot");
+    const onlineEl = document.querySelector("#online");
+    const positionEl = document.querySelector("#position");
+    const savedEl = document.querySelector("#saved");
+    const paletteEl = document.querySelector("#palette");
+
+    const tiles = new Map();
+    const players = new Map();
+    let socket;
+    let self = { id: "", x: 0, y: 0, color: COLORS[0] };
+    let selectedColor = COLORS[0];
+    let bounds = { min: -2048, max: 2047 };
+    let reconnectTimer;
+    let savedTimer;
+
+    function key(x, y) { return `${x},${y}`; }
+
+    function resize() {
+      const ratio = Math.min(devicePixelRatio || 1, 2);
+      canvas.width = Math.floor(innerWidth * ratio);
+      canvas.height = Math.floor(innerHeight * ratio);
+      ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+      draw();
+    }
+
+    function draw() {
+      const width = innerWidth;
+      const height = innerHeight;
+      ctx.fillStyle = "#08111f";
+      ctx.fillRect(0, 0, width, height);
+
+      const columns = Math.ceil(width / TILE_SIZE) + 2;
+      const rows = Math.ceil(height / TILE_SIZE) + 2;
+      const startX = self.x - Math.floor(columns / 2);
+      const startY = self.y - Math.floor(rows / 2);
+      const originX = width / 2 - self.x * TILE_SIZE;
+      const originY = height / 2 - self.y * TILE_SIZE;
+
+      for (let y = startY; y <= startY + rows; y++) {
+        for (let x = startX; x <= startX + columns; x++) {
+          const screenX = originX + x * TILE_SIZE;
+          const screenY = originY + y * TILE_SIZE;
+          const tileColor = tiles.get(key(x, y));
+          if (tileColor) {
+            ctx.fillStyle = tileColor;
+            ctx.globalAlpha = .6;
+            ctx.fillRect(screenX + 2, screenY + 2, TILE_SIZE - 4, TILE_SIZE - 4);
+            ctx.globalAlpha = 1;
+          }
+          ctx.strokeStyle = "rgba(125, 147, 178, .12)";
+          ctx.strokeRect(screenX + .5, screenY + .5, TILE_SIZE, TILE_SIZE);
+        }
+      }
+
+      for (const player of players.values()) {
+        const screenX = originX + player.x * TILE_SIZE + TILE_SIZE / 2;
+        const screenY = originY + player.y * TILE_SIZE + TILE_SIZE / 2;
+        ctx.beginPath();
+        ctx.fillStyle = player.color;
+        ctx.arc(screenX, screenY, player.id === self.id ? 10 : 8, 0, Math.PI * 2);
+        ctx.fill();
+        if (player.id === self.id) {
+          ctx.strokeStyle = "white";
+          ctx.lineWidth = 2;
+          ctx.stroke();
+        }
+      }
+    }
+
+    function setOnline(isOnline, text) {
+      dotEl.classList.toggle("online", isOnline);
+      connectionEl.textContent = text;
+    }
+
+    function refreshInfo() {
+      onlineEl.textContent = `접속 ${players.size}명`;
+      positionEl.textContent = `${self.x}, ${self.y}`;
+    }
+
+    function connect() {
+      clearTimeout(reconnectTimer);
+      setOnline(false, "연결 중");
+      const protocol = location.protocol === "https:" ? "wss:" : "ws:";
+      socket = new WebSocket(`${protocol}//${location.host}/ws`);
+
+      socket.addEventListener("open", () => setOnline(true, "서버 연결됨"));
+      socket.addEventListener("message", (event) => {
+        const message = JSON.parse(event.data);
+
+        if (message.type === "init") {
+          self = message.self;
+          bounds = message.bounds;
+          tiles.clear();
+          players.clear();
+          for (const tile of message.tiles) tiles.set(key(tile.x, tile.y), tile.color);
+          for (const player of message.players) players.set(player.id, player);
+        }
+        if (message.type === "playerJoin" || message.type === "playerMove") {
+          players.set(message.player.id, message.player);
+          if (message.player.id === self.id) self = message.player;
+        }
+        if (message.type === "playerLeave") players.delete(message.playerId);
+        if (message.type === "tilePainted") {
+          tiles.set(key(message.x, message.y), message.color);
+          savedEl.textContent = "서버에 자동 저장됨";
+          clearTimeout(savedTimer);
+          savedTimer = setTimeout(() => { savedEl.textContent = ""; }, 1800);
+        }
+
+        refreshInfo();
+        draw();
+      });
+      socket.addEventListener("close", () => {
+        setOnline(false, "연결 끊김");
+        reconnectTimer = setTimeout(connect, 1800);
+      });
+      socket.addEventListener("error", () => socket.close());
+    }
+
+    function send(message) {
+      if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify(message));
+    }
+
+    function move(dx, dy) {
+      const x = Math.max(bounds.min, Math.min(bounds.max, self.x + dx));
+      const y = Math.max(bounds.min, Math.min(bounds.max, self.y + dy));
+      if (x === self.x && y === self.y) return;
+      send({ type: "move", x, y });
+    }
+
+    function paint() {
+      send({ type: "paint", color: selectedColor });
+    }
+
+    for (const color of COLORS) {
+      const button = document.createElement("button");
+      button.style.background = color;
+      button.title = color;
+      if (color === selectedColor) button.classList.add("selected");
+      button.addEventListener("click", () => {
+        selectedColor = color;
+        for (const item of paletteEl.children) item.classList.toggle("selected", item === button);
+      });
+      paletteEl.append(button);
+    }
+
+    addEventListener("keydown", (event) => {
+      if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", " "].includes(event.key)) event.preventDefault();
+      if (event.key === "ArrowUp" || event.key.toLowerCase() === "w") move(0, -1);
+      if (event.key === "ArrowDown" || event.key.toLowerCase() === "s") move(0, 1);
+      if (event.key === "ArrowLeft" || event.key.toLowerCase() === "a") move(-1, 0);
+      if (event.key === "ArrowRight" || event.key.toLowerCase() === "d") move(1, 0);
+      if (event.key === " ") paint();
+    });
+    document.querySelector("#paint").addEventListener("click", paint);
+    for (const button of document.querySelectorAll(".move button")) {
+      button.addEventListener("pointerdown", () => move(Number(button.dataset.dx), Number(button.dataset.dy)));
+    }
+
+    addEventListener("resize", resize);
+    resize();
+    connect();
+  </script>
+</body>
+</html>
+

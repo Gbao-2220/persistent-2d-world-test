@@ -1,0 +1,13 @@
+{
+  "name": "persistent-2d-world-test",
+  "version": "1.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "wrangler": "^4.0.0"
+  }
+}
+
